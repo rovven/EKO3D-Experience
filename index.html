@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>EKO3D Scanner</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --accent: #4fc3f7;
+            --success: #66bb6a;
+            --bg-dark: #0a0a1e;
+            --glass: rgba(10, 10, 30, 0.65);
+        }
+
+        body {
+            background: var(--bg-dark);
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+            height: 100dvh;
+            width: 100vw;
+            position: fixed;
+        }
+
+        /* ── Camera feed ── */
+        #camera-feed {
+            position: fixed; inset: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            z-index: 0;
+        }
+
+        /* ── Scan overlay ── */
+        #scan-overlay {
+            position: fixed; inset: 0;
+            z-index: 10;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            pointer-events: none;
+        }
+
+        .viewfinder {
+            width: 260px; height: 260px;
+            border: 3px solid var(--accent);
+            border-radius: 24px;
+            position: relative;
+            animation: pulse-border 2s ease-in-out infinite;
+            transition: border-color 0.4s, box-shadow 0.4s;
+        }
+        .viewfinder.detected {
+            border-color: var(--success);
+            box-shadow: 0 0 40px rgba(102, 187, 106, 0.5);
+            animation: none;
+        }
+        .viewfinder-corner {
+            position: absolute; width: 28px; height: 28px;
+            border-color: var(--accent); border-style: solid; border-width: 0;
+            transition: border-color 0.4s;
+        }
+        .viewfinder.detected .viewfinder-corner { border-color: var(--success); }
+        .c-tl { top: -2px; left: -2px; border-top-width: 4px; border-left-width: 4px; border-radius: 12px 0 0 0; }
+        .c-tr { top: -2px; right: -2px; border-top-width: 4px; border-right-width: 4px; border-radius: 0 12px 0 0; }
+        .c-bl { bottom: -2px; left: -2px; border-bottom-width: 4px; border-left-width: 4px; border-radius: 0 0 0 12px; }
+        .c-br { bottom: -2px; right: -2px; border-bottom-width: 4px; border-right-width: 4px; border-radius: 0 0 12px 0; }
+
+        .scan-line {
+            position: absolute; left: 10%; right: 10%; height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            animation: scan-move 2s ease-in-out infinite;
+        }
+        .viewfinder.detected .scan-line { display: none; }
+
+        @keyframes pulse-border {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+        @keyframes scan-move {
+            0%, 100% { top: 15%; }
+            50% { top: 80%; }
+        }
+
+        /* ── Status area ── */
+        .status-area {
+            margin-top: 32px;
+            text-align: center;
+        }
+        .status-text {
+            font-size: 18px; font-weight: 600;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+            transition: color 0.4s;
+        }
+        .status-sub {
+            font-size: 13px; opacity: 0.7;
+            margin-top: 6px;
+        }
+
+        /* ── Top bar ── */
+        #top-bar {
+            position: fixed; top: 0; left: 0; right: 0;
+            z-index: 20;
+            padding: 16px 20px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.5), transparent);
+            display: flex; align-items: center; gap: 12px;
+        }
+        #top-bar .logo {
+            font-size: 22px; font-weight: 800;
+            letter-spacing: 1px;
+            background: linear-gradient(135deg, var(--accent), #ab47bc);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .tracking-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #f44336;
+            transition: background 0.4s;
+        }
+        .tracking-dot.active { background: var(--success); }
+
+        /* ── Bottom info ── */
+        #bottom-bar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            z-index: 20;
+            padding: 20px;
+            background: linear-gradient(to top, rgba(0,0,0,0.6), transparent);
+            text-align: center;
+        }
+        .progress-bar {
+            width: 200px; height: 4px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 2px; margin: 12px auto 0;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%; width: 0%;
+            background: var(--accent);
+            border-radius: 2px;
+            transition: width 0.3s, background 0.4s;
+        }
+        .progress-fill.complete { background: var(--success); width: 100%; }
+
+        /* ── Detected overlay ── */
+        #detected-overlay {
+            position: fixed; inset: 0;
+            z-index: 50;
+            background: rgba(0, 0, 0, 0.75);
+            display: none; flex-direction: column;
+            align-items: center; justify-content: center;
+            backdrop-filter: blur(8px);
+        }
+        #detected-overlay.show { display: flex; }
+
+        .checkmark-circle {
+            width: 90px; height: 90px;
+            border-radius: 50%;
+            background: var(--success);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 48px;
+            animation: pop-in 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+        }
+        @keyframes pop-in {
+            0% { transform: scale(0); }
+            100% { transform: scale(1); }
+        }
+
+        .detected-title {
+            font-size: 24px; font-weight: 700; margin-top: 20px;
+        }
+        .detected-sub {
+            font-size: 14px; opacity: 0.7; margin-top: 8px;
+        }
+        .redirect-bar {
+            width: 220px; height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px; margin-top: 24px;
+            overflow: hidden;
+        }
+        .redirect-fill {
+            height: 100%; width: 0%;
+            background: var(--success);
+            border-radius: 2px;
+            transition: width linear;
+        }
+
+        /* ── Permission prompt ── */
+        #permission-screen {
+            position: fixed; inset: 0;
+            z-index: 100;
+            background: var(--bg-dark);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 40px;
+            text-align: center;
+        }
+        #permission-screen.hidden { display: none; }
+        .perm-icon { font-size: 64px; margin-bottom: 24px; }
+        .perm-title { font-size: 22px; font-weight: 700; margin-bottom: 12px; }
+        .perm-desc { font-size: 14px; opacity: 0.7; margin-bottom: 32px; line-height: 1.5; }
+        .perm-btn {
+            padding: 14px 40px;
+            border: none; border-radius: 30px;
+            background: var(--accent); color: #000;
+            font-size: 16px; font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .perm-btn:active { transform: scale(0.95); }
+
+        /* ── Error ── */
+        .error-text { color: #ef5350; font-size: 14px; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <!-- Camera -->
+    <video id="camera-feed" autoplay playsinline muted></video>
+    <!-- Hidden canvas for frame analysis -->
+    <canvas id="analysis-canvas" style="display:none;"></canvas>
+
+    <!-- Permission Screen -->
+    <div id="permission-screen">
+        <div class="perm-icon">📷</div>
+        <div class="perm-title">Camera Access Required</div>
+        <div class="perm-desc">
+            Point your camera at the EKO mascot to launch the AR experience.
+            <br>No data is sent anywhere — detection runs entirely on your device.
+        </div>
+        <button class="perm-btn" id="start-btn">Open Camera</button>
+        <div class="error-text" id="perm-error" style="display:none;"></div>
+    </div>
+
+    <!-- Scan Overlay -->
+    <div id="scan-overlay">
+        <div class="viewfinder" id="viewfinder">
+            <div class="viewfinder-corner c-tl"></div>
+            <div class="viewfinder-corner c-tr"></div>
+            <div class="viewfinder-corner c-bl"></div>
+            <div class="viewfinder-corner c-br"></div>
+            <div class="scan-line"></div>
+        </div>
+        <div class="status-area">
+            <div class="status-text" id="status-text">Looking for EKO mascot...</div>
+            <div class="status-sub" id="status-sub">Hold your camera steady</div>
+        </div>
+    </div>
+
+    <!-- Top Bar -->
+    <div id="top-bar">
+        <div class="logo">EKO3D</div>
+        <div class="tracking-dot" id="tracking-dot"></div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div id="bottom-bar">
+        <div style="font-size:13px; opacity:0.6;">Matching confidence</div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="confidence-bar"></div>
+        </div>
+    </div>
+
+    <!-- Detected Overlay -->
+    <div id="detected-overlay">
+        <div class="checkmark-circle">✓</div>
+        <div class="detected-title">EKO Mascot Found!</div>
+        <div class="detected-sub" id="redirect-text">Launching AR experience...</div>
+        <div class="redirect-bar">
+            <div class="redirect-fill" id="redirect-fill"></div>
+        </div>
+    </div>
+
+    <!-- jsQR for decoding the QR code image -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <!-- MindAR for image target detection -->
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js"></script>
+
+    <script>
+    // ═══════════════════════════════════════════════════════
+    // CONFIG
+    // ═══════════════════════════════════════════════════════
+    const CONFIG = {
+        // URL is decoded automatically from QrCode.png at startup.
+        // This is only used as a last-resort fallback if decoding fails.
+        WEBAR_URL: null,
+
+        // Path to the QR code image to decode
+        QR_IMAGE: './QrCode.png',
+
+        // Path to the compiled .mind target file (from Mascot.png)
+        // Generate with: npx mind-ar-js compile --image Mascot.png
+        TARGET_FILE: './targets/Mascot.mind',
+
+        // How long (seconds) to confirm detection before redirecting
+        CONFIRM_SECONDS: 1.2,
+
+        // Redirect countdown after confirmed detection
+        REDIRECT_SECONDS: 2.0,
+
+        // Use back camera on mobile
+        PREFERRED_CAMERA: 'environment',
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // DECODE QR CODE IMAGE → extract the WebAR URL
+    // ═══════════════════════════════════════════════════════
+    function decodeQRImage() {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const result = jsQR(imageData.data, canvas.width, canvas.height);
+                if (result && result.data) {
+                    console.log('[EKO3D] QR decoded URL:', result.data);
+                    resolve(result.data);
+                } else {
+                    reject(new Error('Could not decode QR code from QrCode.png'));
+                }
+            };
+            img.onerror = () => reject(new Error('Failed to load QrCode.png'));
+            img.src = CONFIG.QR_IMAGE;
+        });
+    }
+
+    // Decode QR immediately on load
+    decodeQRImage().then(url => {
+        CONFIG.WEBAR_URL = url;
+        console.log('[EKO3D] WebAR URL set from QR:', url);
+    }).catch(err => {
+        console.warn('[EKO3D] QR decode failed:', err.message);
+        console.warn('[EKO3D] Set CONFIG.WEBAR_URL manually or fix QrCode.png');
+    });
+
+    // ═══════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════
+    let state = 'permission'; // permission | scanning | confirming | detected | redirecting
+    let confirmTimer = 0;
+    let videoStream = null;
+    let controller = null;
+
+    // DOM refs
+    const permScreen = document.getElementById('permission-screen');
+    const startBtn = document.getElementById('start-btn');
+    const permError = document.getElementById('perm-error');
+    const video = document.getElementById('camera-feed');
+    const viewfinder = document.getElementById('viewfinder');
+    const statusText = document.getElementById('status-text');
+    const statusSub = document.getElementById('status-sub');
+    const trackingDot = document.getElementById('tracking-dot');
+    const confidenceBar = document.getElementById('confidence-bar');
+    const detectedOverlay = document.getElementById('detected-overlay');
+    const redirectFill = document.getElementById('redirect-fill');
+    const redirectText = document.getElementById('redirect-text');
+
+    // ═══════════════════════════════════════════════════════
+    // CAMERA
+    // ═══════════════════════════════════════════════════════
+    startBtn.addEventListener('click', async () => {
+        try {
+            permError.style.display = 'none';
+            startBtn.textContent = 'Starting...';
+
+            videoStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: CONFIG.PREFERRED_CAMERA,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                }
+            });
+
+            video.srcObject = videoStream;
+            await video.play();
+
+            permScreen.classList.add('hidden');
+            startScanning();
+        } catch (err) {
+            startBtn.textContent = 'Open Camera';
+            permError.textContent = `Camera error: ${err.message}`;
+            permError.style.display = 'block';
+            console.error('Camera access failed:', err);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════
+    // SCANNING with MindAR image tracking
+    // ═══════════════════════════════════════════════════════
+    async function startScanning() {
+        state = 'scanning';
+        updateUI();
+
+        try {
+            // Create MindAR controller (headless, no Three.js needed)
+            controller = new window.MINDAR.IMAGE.Controller({
+                inputWidth: video.videoWidth || 640,
+                inputHeight: video.videoHeight || 480,
+                maxTrack: 1,
+                // Warm up on load
+                onUpdate: (data) => {
+                    if (data && data.type === 'updateMatrix' && data.targetIndex === 0) {
+                        onTargetFound();
+                    }
+                },
+            });
+
+            // Load the compiled image target
+            statusText.textContent = 'Loading target...';
+            await controller.addImageTargets(CONFIG.TARGET_FILE);
+
+            statusText.textContent = 'Looking for EKO mascot...';
+            statusSub.textContent = 'Point camera at the mascot image';
+
+            // Warm up the detector
+            await controller.dummyRun(video);
+            controller.processVideo(video);
+
+        } catch (err) {
+            console.error('MindAR init failed:', err);
+            // Fall back to the simple frame-matching detector
+            statusText.textContent = 'Initializing detector...';
+            startFallbackDetection();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // FALLBACK: Canvas-based ORB feature matching
+    // (Works without .mind file by comparing camera frames
+    //  against the reference image directly)
+    // ═══════════════════════════════════════════════════════
+    let referenceLoaded = false;
+    let referenceCanvas, referenceCtx, referenceData;
+    const analysisCanvas = document.getElementById('analysis-canvas');
+    const analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+
+    function startFallbackDetection() {
+        state = 'scanning';
+
+        // Load reference image
+        const refImg = new Image();
+        refImg.crossOrigin = 'anonymous';
+        refImg.onload = () => {
+            referenceCanvas = document.createElement('canvas');
+            referenceCanvas.width = 160;
+            referenceCanvas.height = 160;
+            referenceCtx = referenceCanvas.getContext('2d', { willReadFrequently: true });
+            referenceCtx.drawImage(refImg, 0, 0, 160, 160);
+            referenceData = referenceCtx.getImageData(0, 0, 160, 160);
+            referenceLoaded = true;
+            statusText.textContent = 'Looking for EKO mascot...';
+            requestAnimationFrame(fallbackDetectionLoop);
+        };
+        refImg.onerror = () => {
+            statusText.textContent = 'Reference image not found';
+            statusSub.textContent = 'Ensure Mascot.png is in the app folder';
+        };
+        refImg.src = './Mascot.png';
+    }
+
+    function fallbackDetectionLoop() {
+        if (state === 'detected' || state === 'redirecting') return;
+        if (!referenceLoaded) { requestAnimationFrame(fallbackDetectionLoop); return; }
+
+        // Downsample camera frame
+        const w = 160, h = 120;
+        analysisCanvas.width = w;
+        analysisCanvas.height = h;
+        analysisCtx.drawImage(video, 0, 0, w, h);
+        const frameData = analysisCtx.getImageData(0, 0, w, h);
+
+        // Color histogram matching (fast approximate detection)
+        const score = compareColorHistograms(referenceData.data, frameData.data);
+
+        // Update confidence UI
+        const normalizedScore = Math.min(1, Math.max(0, (score - 0.3) / 0.5));
+        confidenceBar.style.width = `${normalizedScore * 100}%`;
+
+        if (normalizedScore > 0.65) {
+            trackingDot.classList.add('active');
+
+            if (state === 'scanning') {
+                state = 'confirming';
+                confirmTimer = 0;
+            }
+
+            confirmTimer += 1 / 30; // approx 30fps
+            const progress = confirmTimer / CONFIG.CONFIRM_SECONDS;
+            confidenceBar.style.width = `${Math.min(100, progress * 100)}%`;
+            statusText.textContent = 'Mascot detected! Confirming...';
+
+            if (confirmTimer >= CONFIG.CONFIRM_SECONDS) {
+                onTargetFound();
+                return;
+            }
+        } else {
+            trackingDot.classList.remove('active');
+            if (state === 'confirming') {
+                state = 'scanning';
+                confirmTimer = 0;
+                statusText.textContent = 'Looking for EKO mascot...';
+            }
+        }
+
+        requestAnimationFrame(fallbackDetectionLoop);
+    }
+
+    function compareColorHistograms(refPixels, framePixels) {
+        // Build 16-bin color histograms and compare via Bhattacharyya coefficient
+        const bins = 16;
+        const refHist = new Float32Array(bins * 3);
+        const frameHist = new Float32Array(bins * 3);
+
+        for (let i = 0; i < refPixels.length; i += 4) {
+            refHist[Math.floor(refPixels[i] / 16)] += 1;
+            refHist[bins + Math.floor(refPixels[i+1] / 16)] += 1;
+            refHist[bins*2 + Math.floor(refPixels[i+2] / 16)] += 1;
+        }
+        for (let i = 0; i < framePixels.length; i += 4) {
+            frameHist[Math.floor(framePixels[i] / 16)] += 1;
+            frameHist[bins + Math.floor(framePixels[i+1] / 16)] += 1;
+            frameHist[bins*2 + Math.floor(framePixels[i+2] / 16)] += 1;
+        }
+
+        // Normalize
+        const refTotal = refPixels.length / 4;
+        const frameTotal = framePixels.length / 4;
+        let colorScore = 0;
+        for (let i = 0; i < refHist.length; i++) {
+            refHist[i] /= refTotal;
+            frameHist[i] /= frameTotal;
+            colorScore += Math.sqrt(refHist[i] * frameHist[i]);
+        }
+        colorScore /= 3;
+
+        // Also check for the mascot's distinctive colors:
+        // - Cyan/teal eyes (~R:140-255, G:200-255, B:200-255)
+        // - Purple jacket (~R:60-130, G:30-90, B:100-180)
+        // - Dark screen face (~R:0-30, G:10-50, B:20-60)
+        let cyanCount = 0, purpleCount = 0, darkCount = 0;
+        const total = framePixels.length / 4;
+
+        for (let i = 0; i < framePixels.length; i += 4) {
+            const r = framePixels[i], g = framePixels[i+1], b = framePixels[i+2];
+            // Cyan/teal eyes
+            if (r > 100 && g > 200 && b > 200 && g > r) cyanCount++;
+            // Purple jacket
+            if (r > 50 && r < 140 && g < 90 && b > 80 && b > g) purpleCount++;
+            // Dark screen
+            if (r < 35 && g < 55 && b < 65 && r + g + b < 100) darkCount++;
+        }
+
+        const cyanRatio = cyanCount / total;
+        const purpleRatio = purpleCount / total;
+        const darkRatio = darkCount / total;
+
+        // Mascot signature: has all three distinctive color regions
+        let signatureBonus = 0;
+        if (cyanRatio > 0.01) signatureBonus += 0.15;  // cyan eyes present
+        if (purpleRatio > 0.03) signatureBonus += 0.15; // purple jacket present
+        if (darkRatio > 0.02) signatureBonus += 0.10;   // dark screen face present
+
+        return Math.min(1.0, colorScore * 0.6 + signatureBonus);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DETECTION CONFIRMED → REDIRECT
+    // ═══════════════════════════════════════════════════════
+    function onTargetFound() {
+        if (state === 'detected' || state === 'redirecting') return;
+        state = 'detected';
+
+        // Haptic feedback
+        if (navigator.vibrate) navigator.vibrate(200);
+
+        // Update UI
+        viewfinder.classList.add('detected');
+        trackingDot.classList.add('active');
+        confidenceBar.style.width = '100%';
+        confidenceBar.classList.add('complete');
+        statusText.textContent = 'Mascot Found!';
+        statusText.style.color = 'var(--success)';
+
+        // Show detected overlay after a beat
+        setTimeout(() => {
+            detectedOverlay.classList.add('show');
+            startRedirect();
+        }, 600);
+    }
+
+    function startRedirect() {
+        state = 'redirecting';
+
+        // Animate redirect progress bar
+        redirectFill.style.transition = `width ${CONFIG.REDIRECT_SECONDS}s linear`;
+        requestAnimationFrame(() => {
+            redirectFill.style.width = '100%';
+        });
+
+        // Actually redirect
+        setTimeout(() => {
+            if (!CONFIG.WEBAR_URL) {
+                redirectText.textContent = 'QR code not decoded yet — retrying...';
+                // Try decoding one more time
+                decodeQRImage().then(url => {
+                    CONFIG.WEBAR_URL = url;
+                    doRedirect();
+                }).catch(() => {
+                    redirectText.textContent = 'Error: Could not read QR code';
+                });
+                return;
+            }
+            doRedirect();
+        }, CONFIG.REDIRECT_SECONDS * 1000);
+    }
+
+    function doRedirect() {
+        redirectText.textContent = 'Opening...';
+
+        // Stop camera
+        if (videoStream) {
+            videoStream.getTracks().forEach(t => t.stop());
+        }
+        if (controller) {
+            try { controller.stopProcessVideo(); } catch(e) {}
+        }
+
+        // Navigate to the URL decoded from the QR code
+        window.location.href = CONFIG.WEBAR_URL;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UI HELPERS
+    // ═══════════════════════════════════════════════════════
+    function updateUI() {
+        switch (state) {
+            case 'scanning':
+                viewfinder.classList.remove('detected');
+                confidenceBar.classList.remove('complete');
+                confidenceBar.style.width = '0%';
+                statusText.style.color = '#fff';
+                statusText.textContent = 'Looking for EKO mascot...';
+                statusSub.textContent = 'Point camera at the mascot image';
+                break;
+        }
+    }
+
+    // Register service worker for PWA
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+    </script>
+</body>
+</html>
