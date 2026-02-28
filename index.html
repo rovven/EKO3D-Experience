@@ -292,7 +292,10 @@
         TARGET_FILE: './targets/Mascot.mind',
 
         // How long (seconds) to confirm detection before redirecting
-        CONFIRM_SECONDS: 1.8,
+        CONFIRM_SECONDS: 1.5,
+
+        
+        AUTO_REDIRECT_SECONDS: 7,
 
         // Redirect countdown after confirmed detection
         REDIRECT_SECONDS: 2.0,
@@ -344,6 +347,7 @@
     let confirmTimer = 0;
     let videoStream = null;
     let controller = null;
+    let autoRedirectTimer = null;
 
     // DOM refs
     const permScreen = document.getElementById('permission-screen');
@@ -379,6 +383,7 @@
             await video.play();
 
             permScreen.classList.add('hidden');
+            startAutoRedirectCountdown();
             startScanning();
         } catch (err) {
             startBtn.textContent = 'Open Camera';
@@ -387,6 +392,27 @@
             console.error('Camera access failed:', err);
         }
     });
+
+
+    function startAutoRedirectCountdown() {
+        let remaining = CONFIG.AUTO_REDIRECT_SECONDS;
+        statusSub.textContent = `Auto-redirecting in ${remaining}s if no mascot found`;
+
+        autoRedirectTimer = setInterval(() => {
+            if (state === 'detected' || state === 'redirecting') {
+                clearInterval(autoRedirectTimer);
+                return;
+            }
+            remaining--;
+            if (remaining <= 0) {
+                clearInterval(autoRedirectTimer);
+                statusSub.textContent = 'Auto-redirecting...';
+                onTargetFound();
+            } else {
+                statusSub.textContent = `Auto-redirecting in ${remaining}s if no mascot found`;
+            }
+        }, 1000);
+    }
 
     // ═══════════════════════════════════════════════════════
     // SCANNING with MindAR image tracking
@@ -476,12 +502,10 @@
         // Color histogram matching (fast approximate detection)
         const score = compareColorHistograms(referenceData.data, frameData.data);
 
-        // score is 0 if mascot not present, 0.5–1.0 if it is.
-        // Map 0.5–1.0 → 0–100% on the confidence bar.
-        const normalizedScore = score === 0 ? 0 : Math.min(1, (score - 0.5) / 0.5);
-        confidenceBar.style.width = `${normalizedScore * 100}%`;
+        // Map score 0.0–1.0 → confidence bar
+        confidenceBar.style.width = `${Math.round(score * 100)}%`;
 
-        if (score > 0.52) {
+        if (score > 0.55) {
             trackingDot.classList.add('active');
 
             if (state === 'scanning') {
@@ -511,45 +535,63 @@
     }
 
     function compareColorHistograms(refPixels, framePixels) {
-        // Balanced 3-signature detection.
-        // ALL THREE mascot color regions must be present or score = 0.
-        // Thresholds are intentionally looser than hard-strict to handle
-        // varying lighting, print quality, and camera exposure.
+        // Histogram similarity (Bhattacharyya) + distinctive color bonuses.
+        // Returns 0.0 – 1.0. Triggers at > 0.55.
+        const bins = 16;
+        const refHist  = new Float32Array(bins * 3);
+        const frameHist = new Float32Array(bins * 3);
 
-        const total = framePixels.length / 4;
+        for (let i = 0; i < refPixels.length; i += 4) {
+            refHist[Math.floor(refPixels[i]   / 16)]       += 1;
+            refHist[bins   + Math.floor(refPixels[i+1] / 16)] += 1;
+            refHist[bins*2 + Math.floor(refPixels[i+2] / 16)] += 1;
+        }
+        for (let i = 0; i < framePixels.length; i += 4) {
+            frameHist[Math.floor(framePixels[i]   / 16)]       += 1;
+            frameHist[bins   + Math.floor(framePixels[i+1] / 16)] += 1;
+            frameHist[bins*2 + Math.floor(framePixels[i+2] / 16)] += 1;
+        }
+
+        const refTotal   = refPixels.length   / 4;
+        const frameTotal = framePixels.length / 4;
+        let colorScore = 0;
+        for (let i = 0; i < refHist.length; i++) {
+            refHist[i]   /= refTotal;
+            frameHist[i] /= frameTotal;
+            colorScore   += Math.sqrt(refHist[i] * frameHist[i]);
+        }
+        colorScore /= 3; // 0.0 – 1.0
+
+        // Bonus points for EKO's distinctive colors.
+        // At least 2 of 3 must be visible to add any bonus.
         let cyanCount = 0, purpleCount = 0, darkCount = 0;
+        const total = framePixels.length / 4;
 
         for (let i = 0; i < framePixels.length; i += 4) {
             const r = framePixels[i], g = framePixels[i+1], b = framePixels[i+2];
-
-            // Cyan/teal eyes: strong green+blue, clearly more than red
-            if (g > 160 && b > 150 && g > r * 1.2 && b > r * 1.0) cyanCount++;
-
-            // Purple/violet jacket: red+blue present, green suppressed
-            if (r > 50 && r < 180 && g < 100 && b > 70 && b > g) purpleCount++;
-
-            // Dark screen face: very dark, no channel dominant
-            if (r < 40 && g < 60 && b < 70 && (r + g + b) < 120) darkCount++;
+            if (g > 150 && b > 140 && g > r * 1.1)                          cyanCount++;   // teal eyes
+            if (r > 50 && r < 190 && g < 110 && b > 60 && b > g)            purpleCount++; // purple jacket
+            if (r < 50 && g < 65  && b < 75  && (r + g + b) < 140)          darkCount++;   // dark face
         }
 
         const cyanRatio   = cyanCount   / total;
         const purpleRatio = purpleCount / total;
         const darkRatio   = darkCount   / total;
 
-        // All three must be present — gates false positives
-        const cyanOk   = cyanRatio   > 0.008;   // teal eyes
-        const purpleOk = purpleRatio > 0.020;   // purple jacket
-        const darkOk   = darkRatio   > 0.015;   // dark face screen
+        const hasCyan   = cyanRatio   > 0.005;
+        const hasPurple = purpleRatio > 0.012;
+        const hasDark   = darkRatio   > 0.010;
+        const sigCount  = (hasCyan ? 1 : 0) + (hasPurple ? 1 : 0) + (hasDark ? 1 : 0);
 
-        if (!cyanOk || !purpleOk || !darkOk) return 0;
+        // Require at least 2 of 3 signatures to add bonus
+        let bonus = 0;
+        if (sigCount >= 2) {
+            if (hasCyan)   bonus += 0.12;
+            if (hasPurple) bonus += 0.12;
+            if (hasDark)   bonus += 0.08;
+        }
 
-        // Score: 0.5 base + up to 0.5 from signal strength
-        const cyanStrength   = Math.min(1, cyanRatio   / 0.05);
-        const purpleStrength = Math.min(1, purpleRatio / 0.10);
-        const darkStrength   = Math.min(1, darkRatio   / 0.07);
-
-        const signalScore = (cyanStrength + purpleStrength + darkStrength) / 3;
-        return Math.min(1.0, 0.50 + signalScore * 0.50);
+        return Math.min(1.0, colorScore * 0.68 + bonus);
     }
 
     // ═══════════════════════════════════════════════════════
