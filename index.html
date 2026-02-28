@@ -372,15 +372,20 @@
             startBtn.textContent = 'Requesting permissions...';
 
             // ── Motion & orientation permission (iOS 13+) ──
-            // MUST be called synchronously inside a user-gesture handler.
+            // Both requestPermission() calls MUST be initiated synchronously
+            // within the same user-gesture tick before any await. We kick off
+            // both Promises at once, then await them together so iOS shows
+            // both dialogs without breaking the gesture chain.
+            const motionReqs = [];
             if (typeof DeviceMotionEvent !== 'undefined' &&
                 typeof DeviceMotionEvent.requestPermission === 'function') {
-                try { await DeviceMotionEvent.requestPermission(); } catch(e) {}
+                motionReqs.push(DeviceMotionEvent.requestPermission().catch(() => {}));
             }
             if (typeof DeviceOrientationEvent !== 'undefined' &&
                 typeof DeviceOrientationEvent.requestPermission === 'function') {
-                try { await DeviceOrientationEvent.requestPermission(); } catch(e) {}
+                motionReqs.push(DeviceOrientationEvent.requestPermission().catch(() => {}));
             }
+            if (motionReqs.length) await Promise.all(motionReqs);
 
             startBtn.textContent = 'Starting...';
 
