@@ -292,10 +292,10 @@
         TARGET_FILE: './targets/Mascot.mind',
 
         // How long (seconds) to confirm detection before redirecting
-        CONFIRM_SECONDS: 1.5,
+        CONFIRM_SECONDS: 3.0,
 
         
-        AUTO_REDIRECT_SECONDS: 7,
+        AUTO_REDIRECT_SECONDS: 10,
 
         // Redirect countdown after confirmed detection
         REDIRECT_SECONDS: 2.0,
@@ -505,7 +505,7 @@
         // Map score 0.0–1.0 → confidence bar
         confidenceBar.style.width = `${Math.round(score * 100)}%`;
 
-        if (score > 0.55) {
+        if (score > 0.62) {
             trackingDot.classList.add('active');
 
             if (state === 'scanning') {
@@ -645,7 +645,7 @@
         }, CONFIG.REDIRECT_SECONDS * 1000);
     }
 
-    function doRedirect() {
+    async function doRedirect() {
         redirectText.textContent = 'Opening...';
 
         // Stop camera
@@ -654,6 +654,17 @@
         }
         if (controller) {
             try { controller.stopProcessVideo(); } catch(e) {}
+        }
+
+        // Request motion & orientation permissions (iOS 13+) before leaving.
+        // Must happen inside a user-gesture chain — the redirect counts as one.
+        if (typeof DeviceMotionEvent !== 'undefined' &&
+            typeof DeviceMotionEvent.requestPermission === 'function') {
+            try { await DeviceMotionEvent.requestPermission(); } catch(e) {}
+        }
+        if (typeof DeviceOrientationEvent !== 'undefined' &&
+            typeof DeviceOrientationEvent.requestPermission === 'function') {
+            try { await DeviceOrientationEvent.requestPermission(); } catch(e) {}
         }
 
         // Navigate to the URL decoded from the QR code
