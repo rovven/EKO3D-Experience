@@ -10,7 +10,6 @@ A web app that uses your phone camera to detect the **EKO mascot** and launch an
 2. Tap **Open Camera** and allow camera access
 3. Point your camera at the **EKO mascot image**
 4. The app detects the mascot and automatically redirects you to the WebAR experience
-5. If nothing is detected within **7 seconds**, it redirects automatically anyway
 
 ---
 
@@ -53,3 +52,4 @@ Camera access requires HTTPS (GitHub Pages, Netlify, Vercel, etc.).
 - [MindAR](https://hiukim.github.io/mind-ar-js-doc/) — image target tracking
 - [jsQR](https://github.com/cozmo/jsQR) — QR code decoding
 - Vanilla JS / HTML / CSS — no framework, no build step
+
