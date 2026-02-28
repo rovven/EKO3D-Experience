@@ -308,31 +308,29 @@
     };
 
     // ═══════════════════════════════════════════════════════
-    // LIVE QR SCAN — reads QR codes from the camera feed
-    // Runs silently in background every 15 frames.
-    // When a URL is found it is stored in CONFIG.WEBAR_URL.
+    // STARTUP QR DECODE — decode QrCode.png once on page load
+    // Stores the URL in CONFIG.WEBAR_URL for use by launchAR().
     // ═══════════════════════════════════════════════════════
-    let qrFrameCount = 0;
-    const qrCanvas  = document.createElement('canvas');
-    const qrCtx     = qrCanvas.getContext('2d', { willReadFrequently: true });
-
-    function scanQRFromCamera() {
-        if (CONFIG.WEBAR_URL) return; // already have it
-        if (!video.videoWidth)  return;
-
-        qrFrameCount++;
-        if (qrFrameCount % 15 !== 0) return; // every 15 frames
-
-        qrCanvas.width  = video.videoWidth;
-        qrCanvas.height = video.videoHeight;
-        qrCtx.drawImage(video, 0, 0);
-        const img = qrCtx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
-        const result = jsQR(img.data, img.width, img.height);
-        if (result && result.data && result.data.startsWith('http')) {
-            CONFIG.WEBAR_URL = result.data;
-            console.log('[EKO3D] QR scanned from camera:', result.data);
-        }
-    }
+    (function decodeQROnLoad() {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth; c.height = img.naturalHeight;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const d = ctx.getImageData(0, 0, c.width, c.height);
+            const result = jsQR(d.data, d.width, d.height);
+            if (result && result.data && result.data.startsWith('http')) {
+                CONFIG.WEBAR_URL = result.data;
+                console.log('[EKO3D] QR decoded from file:', result.data);
+            } else {
+                console.warn('[EKO3D] QrCode.png could not be decoded.');
+            }
+        };
+        img.onerror = () => console.warn('[EKO3D] QrCode.png not found.');
+        img.src = './QrCode.png';
+    })();
 
     // ═══════════════════════════════════════════════════════
     // STATE
@@ -541,8 +539,6 @@
         if (state === 'detected' || state === 'redirecting') return;
         if (!referenceLoaded) { requestAnimationFrame(fallbackDetectionLoop); return; }
 
-        scanQRFromCamera();
-
         const score = scoreFrameAgainstReference();
         const display = Math.min(1, Math.max(0, (score - 0.10) / 0.25));
         confidenceBar.style.width = `${Math.round(display * 100)}%`;
@@ -612,9 +608,8 @@
 
         const url = CONFIG.WEBAR_URL;
         if (url) {
-            // Open in system browser so motion/orientation permissions work.
-            // Clicking a real <a target="_blank"> is the most reliable method
-            // to escape an in-app browser on both iOS and Android.
+            // Open in system browser — <a target="_blank"> click is the most
+            // reliable way to escape an in-app browser on iOS and Android.
             const a = document.createElement('a');
             a.href = url;
             a.target = '_blank';
@@ -622,38 +617,12 @@
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            // Fallback: same-tab navigate if new tab was blocked
+            // Fallback: same-tab navigate if the new tab was blocked
             setTimeout(() => { window.location.href = url; }, 900);
         } else {
-            // QR not yet scanned from camera — decode QrCode.png as fallback,
-            // then open in external browser the same way.
-            const tryOpen = (url) => {
-                const a = document.createElement('a');
-                a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                setTimeout(() => { window.location.href = url; }, 900);
-            };
-
-            // Poll camera QR scan for 2 more seconds first
-            const deadline = Date.now() + 2000;
-            const tryFinal = () => {
-                if (CONFIG.WEBAR_URL) { tryOpen(CONFIG.WEBAR_URL); return; }
-                if (Date.now() < deadline) { setTimeout(tryFinal, 100); return; }
-                // Last resort: decode QrCode.png file directly
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => {
-                    const c = document.createElement('canvas');
-                    c.width = img.naturalWidth; c.height = img.naturalHeight;
-                    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-                    const d = ctx.getImageData(0, 0, c.width, c.height);
-                    const result = jsQR(d.data, d.width, d.height);
-                    if (result && result.data) { tryOpen(result.data); }
-                };
-                img.onerror = () => {};
-                img.src = './QrCode.png';
-            };
-            tryFinal();
+            console.warn('[EKO3D] No URL available — QrCode.png may not have decoded.');
+            btn.textContent = 'Launch AR ▶';
+            btn.disabled = false;
         }
     }
 
