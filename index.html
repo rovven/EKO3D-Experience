@@ -625,17 +625,33 @@
             // Fallback: same-tab navigate if new tab was blocked
             setTimeout(() => { window.location.href = url; }, 900);
         } else {
+            // QR not yet scanned from camera — decode QrCode.png as fallback,
+            // then open in external browser the same way.
+            const tryOpen = (url) => {
+                const a = document.createElement('a');
+                a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                setTimeout(() => { window.location.href = url; }, 900);
+            };
+
+            // Poll camera QR scan for 2 more seconds first
             const deadline = Date.now() + 2000;
             const tryFinal = () => {
-                if (CONFIG.WEBAR_URL) { window.location.href = CONFIG.WEBAR_URL; return; }
-                if (Date.now() < deadline) { setTimeout(tryFinal, 100); }
-                else {
-                    document.getElementById('redirect-text').textContent =
-                        'Show the QR code to the camera first';
-                    btn.textContent = 'Retry';
-                    btn.disabled = false;
-                    state = 'detected';
-                }
+                if (CONFIG.WEBAR_URL) { tryOpen(CONFIG.WEBAR_URL); return; }
+                if (Date.now() < deadline) { setTimeout(tryFinal, 100); return; }
+                // Last resort: decode QrCode.png file directly
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth; c.height = img.naturalHeight;
+                    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+                    const d = ctx.getImageData(0, 0, c.width, c.height);
+                    const result = jsQR(d.data, d.width, d.height);
+                    if (result && result.data) { tryOpen(result.data); }
+                };
+                img.onerror = () => {};
+                img.src = './QrCode.png';
             };
             tryFinal();
         }
