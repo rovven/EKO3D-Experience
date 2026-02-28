@@ -462,136 +462,106 @@
     }
 
     // ═══════════════════════════════════════════════════════
-    // FALLBACK: Canvas-based ORB feature matching
-    // (Works without .mind file by comparing camera frames
-    //  against the reference image directly)
+    // FALLBACK: Direct pixel-level template matching
+    // Loads Mascot.png at 3 scales (64,48,32 px).
+    // Each frame: tests 3 crop regions × 3 scales = 9 combos.
+    // Skips transparent/white background pixels in reference.
+    // Score = matched pixels / valid reference pixels.
+    // Triggers at score > 0.28 held for CONFIRM_SECONDS.
     // ═══════════════════════════════════════════════════════
     let referenceLoaded = false;
-    let referenceCanvas, referenceCtx, referenceData;
-    const analysisCanvas = document.getElementById('analysis-canvas');
-    const analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+    let refScales = [];  // [{pixels, size, valid}]
+    const cropCanvas = document.createElement('canvas');
+    const cropCtx    = cropCanvas.getContext('2d', { willReadFrequently: true });
 
     function startFallbackDetection() {
         state = 'scanning';
-
-        // Load reference image
         const refImg = new Image();
         refImg.crossOrigin = 'anonymous';
         refImg.onload = () => {
-            referenceCanvas = document.createElement('canvas');
-            referenceCanvas.width = 160;
-            referenceCanvas.height = 160;
-            referenceCtx = referenceCanvas.getContext('2d', { willReadFrequently: true });
-            referenceCtx.drawImage(refImg, 0, 0, 160, 160);
-            referenceData = referenceCtx.getImageData(0, 0, 160, 160);
-            referenceLoaded = true;
+            [64, 48, 32].forEach(sz => {
+                const c = document.createElement('canvas');
+                c.width = sz; c.height = sz;
+                const ctx = c.getContext('2d');
+                ctx.drawImage(refImg, 0, 0, sz, sz);
+                const d = ctx.getImageData(0, 0, sz, sz).data;
+                let valid = 0;
+                for (let i = 0; i < d.length; i += 4) {
+                    const r=d[i], g=d[i+1], b=d[i+2], a=d[i+3];
+                    if (a > 50 && !(r > 215 && g > 215 && b > 215)) valid++;
+                }
+                if (valid > 60) refScales.push({ pixels: d, size: sz, valid });
+            });
+            referenceLoaded = refScales.length > 0;
             statusText.textContent = 'Looking for EKO mascot...';
             requestAnimationFrame(fallbackDetectionLoop);
         };
         refImg.onerror = () => {
-            statusText.textContent = 'Reference image not found';
-            statusSub.textContent = 'Ensure Mascot.png is in the app folder';
+            statusText.textContent = 'Mascot.png not found';
+            statusSub.textContent  = 'Ensure Mascot.png is in the repo root';
         };
         refImg.src = './Mascot.png';
+    }
+
+    function scoreFrameAgainstReference() {
+        if (!refScales.length) return 0;
+        const vw = video.videoWidth  || 640;
+        const vh = video.videoHeight || 480;
+        // 3 crops: full frame, center 70%, tight center 45%
+        const crops = [
+            { sx: 0,         sy: 0,         sw: vw,        sh: vh        },
+            { sx: vw * 0.15, sy: vh * 0.05, sw: vw * 0.70, sh: vh * 0.90 },
+            { sx: vw * 0.27, sy: vh * 0.10, sw: vw * 0.46, sh: vh * 0.80 },
+        ];
+        let best = 0;
+        for (const ref of refScales) {
+            cropCanvas.width  = ref.size;
+            cropCanvas.height = ref.size;
+            for (const crop of crops) {
+                cropCtx.drawImage(video,
+                    crop.sx, crop.sy, crop.sw, crop.sh,
+                    0, 0, ref.size, ref.size);
+                const fd = cropCtx.getImageData(0, 0, ref.size, ref.size).data;
+                let match = 0;
+                for (let i = 0; i < ref.pixels.length; i += 4) {
+                    const rr=ref.pixels[i], rg=ref.pixels[i+1],
+                          rb=ref.pixels[i+2], ra=ref.pixels[i+3];
+                    if (ra < 50 || (rr > 215 && rg > 215 && rb > 215)) continue;
+                    if (Math.abs(rr-fd[i]) + Math.abs(rg-fd[i+1]) + Math.abs(rb-fd[i+2]) < 140)
+                        match++;
+                }
+                const s = match / ref.valid;
+                if (s > best) best = s;
+            }
+        }
+        return best;
     }
 
     function fallbackDetectionLoop() {
         if (state === 'detected' || state === 'redirecting') return;
         if (!referenceLoaded) { requestAnimationFrame(fallbackDetectionLoop); return; }
 
-        // Downsample camera frame
-        const w = 160, h = 120;
-        analysisCanvas.width = w;
-        analysisCanvas.height = h;
-        analysisCtx.drawImage(video, 0, 0, w, h);
-        const frameData = analysisCtx.getImageData(0, 0, w, h);
-
-        // Also scan for QR code in the live feed (silently, every 15 frames)
         scanQRFromCamera();
 
-        // Color detection
-        const score = compareColorHistograms(referenceData.data, frameData.data);
+        const score = scoreFrameAgainstReference();
+        const display = Math.min(1, Math.max(0, (score - 0.10) / 0.25));
+        confidenceBar.style.width = `${Math.round(display * 100)}%`;
 
-        // Map score 0.0–1.0 → confidence bar
-        confidenceBar.style.width = `${Math.round(score * 100)}%`;
-
-        if (score > 0.50) {
+        if (score > 0.28) {
             trackingDot.classList.add('active');
-
-            if (state === 'scanning') {
-                state = 'confirming';
-                confirmTimer = 0;
-            }
-
-            confirmTimer += 1 / 30; // approx 30fps
-            const progress = confirmTimer / CONFIG.CONFIRM_SECONDS;
-            confidenceBar.style.width = `${Math.min(100, progress * 100)}%`;
-            statusText.textContent = 'Mascot detected! Confirming...';
-
-            if (confirmTimer >= CONFIG.CONFIRM_SECONDS) {
-                onTargetFound();
-                return;
-            }
+            if (state === 'scanning') { state = 'confirming'; confirmTimer = 0; }
+            confirmTimer += 1 / 30;
+            confidenceBar.style.width = `${Math.min(100, (confirmTimer / CONFIG.CONFIRM_SECONDS) * 100)}%`;
+            statusText.textContent = 'Mascot detected! Hold still...';
+            if (confirmTimer >= CONFIG.CONFIRM_SECONDS) { onTargetFound(); return; }
         } else {
             trackingDot.classList.remove('active');
             if (state === 'confirming') {
-                state = 'scanning';
-                confirmTimer = 0;
+                state = 'scanning'; confirmTimer = 0;
                 statusText.textContent = 'Looking for EKO mascot...';
             }
         }
-
         requestAnimationFrame(fallbackDetectionLoop);
-    }
-
-    function compareColorHistograms(refPixels, framePixels) {
-        // Loose histogram match + EKO colour signature bonus.
-        // Triggers at score > 0.50. 4-second hold prevents false positives.
-        const bins = 16;
-        const refHist   = new Float32Array(bins * 3);
-        const frameHist = new Float32Array(bins * 3);
-
-        for (let i = 0; i < refPixels.length; i += 4) {
-            refHist[Math.floor(refPixels[i]   / 16)]       += 1;
-            refHist[bins   + Math.floor(refPixels[i+1] / 16)] += 1;
-            refHist[bins*2 + Math.floor(refPixels[i+2] / 16)] += 1;
-        }
-        for (let i = 0; i < framePixels.length; i += 4) {
-            frameHist[Math.floor(framePixels[i]   / 16)]       += 1;
-            frameHist[bins   + Math.floor(framePixels[i+1] / 16)] += 1;
-            frameHist[bins*2 + Math.floor(framePixels[i+2] / 16)] += 1;
-        }
-        const refTotal = refPixels.length / 4;
-        const fTotal   = framePixels.length / 4;
-        let colorScore = 0;
-        for (let i = 0; i < refHist.length; i++) {
-            refHist[i]   /= refTotal;
-            frameHist[i] /= fTotal;
-            colorScore   += Math.sqrt(refHist[i] * frameHist[i]);
-        }
-        colorScore /= 3;
-
-        // EKO colour signatures — 2 of 3 required for bonus
-        let tealC = 0, purpleC = 0, darkC = 0;
-        const total = framePixels.length / 4;
-        for (let i = 0; i < framePixels.length; i += 4) {
-            const r = framePixels[i], g = framePixels[i+1], b = framePixels[i+2];
-            if (g > 150 && b > 140 && g > r * 1.1)                     tealC++;
-            if (r > 50 && r < 190 && g < 110 && b > 60 && b > g)      purpleC++;
-            if (r < 50 && g < 65  && b < 75  && (r+g+b) < 140)        darkC++;
-        }
-        const hasTeal   = tealC   / total > 0.004;
-        const hasPurple = purpleC / total > 0.010;
-        const hasDark   = darkC   / total > 0.008;
-        const sigs = (hasTeal?1:0) + (hasPurple?1:0) + (hasDark?1:0);
-
-        let bonus = 0;
-        if (sigs >= 2) {
-            if (hasTeal)   bonus += 0.12;
-            if (hasPurple) bonus += 0.12;
-            if (hasDark)   bonus += 0.08;
-        }
-        return Math.min(1.0, colorScore * 0.68 + bonus);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -640,17 +610,28 @@
         if (videoStream) videoStream.getTracks().forEach(t => t.stop());
         if (controller) { try { controller.stopProcessVideo(); } catch(e) {} }
 
-        if (CONFIG.WEBAR_URL) {
-            window.location.href = CONFIG.WEBAR_URL;
+        const url = CONFIG.WEBAR_URL;
+        if (url) {
+            // Open in system browser so motion/orientation permissions work.
+            // Clicking a real <a target="_blank"> is the most reliable method
+            // to escape an in-app browser on both iOS and Android.
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            // Fallback: same-tab navigate if new tab was blocked
+            setTimeout(() => { window.location.href = url; }, 900);
         } else {
-            // QR not yet found — do one final high-res scan attempt
             const deadline = Date.now() + 2000;
             const tryFinal = () => {
                 if (CONFIG.WEBAR_URL) { window.location.href = CONFIG.WEBAR_URL; return; }
                 if (Date.now() < deadline) { setTimeout(tryFinal, 100); }
                 else {
                     document.getElementById('redirect-text').textContent =
-                        'Point camera at the QR code first';
+                        'Show the QR code to the camera first';
                     btn.textContent = 'Retry';
                     btn.disabled = false;
                     state = 'detected';
