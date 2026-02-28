@@ -291,7 +291,7 @@
     // CONFIG
     // ═══════════════════════════════════════════════════════
     const CONFIG = {
-        // Filled automatically by scanning the QR code from the live camera feed.
+        // Decoded from QrCode.png on page load.
         WEBAR_URL: null,
 
         // Path to the compiled .mind target file (from Mascot.png)
@@ -608,22 +608,73 @@
 
         const url = CONFIG.WEBAR_URL;
         if (url) {
-            // Open in system browser — <a target="_blank"> click is the most
-            // reliable way to escape an in-app browser on iOS and Android.
-            const a = document.createElement('a');
-            a.href = url;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            // Fallback: same-tab navigate if the new tab was blocked
-            setTimeout(() => { window.location.href = url; }, 900);
+            forceOpenExternal(url);
         } else {
             console.warn('[EKO3D] No URL available — QrCode.png may not have decoded.');
             btn.textContent = 'Launch AR ▶';
             btn.disabled = false;
         }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // FORCE OPEN EXTERNAL — tries every known method to
+    // escape an in-app browser and open the URL in the
+    // system browser (Safari on iOS, Chrome on Android).
+    // ═══════════════════════════════════════════════════════
+    function forceOpenExternal(url) {
+        const ua  = navigator.userAgent || '';
+        const iOS = /iPhone|iPad|iPod/i.test(ua);
+        const android = /Android/i.test(ua);
+
+        // ── 1. Real anchor click ─────────────────────────
+        // Most reliable single method; works in Safari, Chrome,
+        // and many in-app browsers (Instagram, TikTok, etc.).
+        try {
+            const a = document.createElement('a');
+            a.href = url; a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.style.cssText = 'position:fixed;left:-9999px';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch(e) {}
+
+        // ── 2. window.open ───────────────────────────────
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch(e) {}
+
+        if (android) {
+            // ── 3a. Android: Chrome Intent URL ──────────
+            // Forces the URL to open in Chrome even from
+            // WeChat, Instagram, or any in-app WebView.
+            setTimeout(() => {
+                try {
+                    const host = url.replace(/^https?:\/\//, '');
+                    window.location.href =
+                        'intent://' + host +
+                        '#Intent;scheme=https;' +
+                        'package=com.android.chrome;' +
+                        'S.browser_fallback_url=' + encodeURIComponent(url) + ';end';
+                } catch(e) {}
+            }, 300);
+        }
+
+        if (iOS) {
+            // ── 3b. iOS: Google Chrome URL scheme ───────
+            // Opens in Chrome for iOS if installed.
+            setTimeout(() => {
+                try {
+                    window.location.href =
+                        'googlechromes://navigate?url=' + encodeURIComponent(url);
+                } catch(e) {}
+            }, 300);
+        }
+
+        // ── 4. Same-tab navigate (universal last resort) ─
+        // Navigates the current tab — guaranteed to work
+        // everywhere even if all above are blocked.
+        setTimeout(() => {
+            window.location.href = url;
+        }, 1200);
     }
 
     // ═══════════════════════════════════════════════════════
