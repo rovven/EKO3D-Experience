@@ -292,7 +292,7 @@
         TARGET_FILE: './targets/Mascot.mind',
 
         // How long (seconds) to confirm detection before redirecting
-        CONFIRM_SECONDS: 2.5,
+        CONFIRM_SECONDS: 1.8,
 
         // Redirect countdown after confirmed detection
         REDIRECT_SECONDS: 2.0,
@@ -476,11 +476,12 @@
         // Color histogram matching (fast approximate detection)
         const score = compareColorHistograms(referenceData.data, frameData.data);
 
-        // Update confidence UI
-        const normalizedScore = Math.min(1, Math.max(0, (score - 0.3) / 0.5));
+        // score is 0 if mascot not present, 0.5–1.0 if it is.
+        // Map 0.5–1.0 → 0–100% on the confidence bar.
+        const normalizedScore = score === 0 ? 0 : Math.min(1, (score - 0.5) / 0.5);
         confidenceBar.style.width = `${normalizedScore * 100}%`;
 
-        if (normalizedScore > 0.65) {
+        if (score > 0.52) {
             trackingDot.classList.add('active');
 
             if (state === 'scanning') {
@@ -510,10 +511,10 @@
     }
 
     function compareColorHistograms(refPixels, framePixels) {
-        // ── STRICT 3-signature detection ──────────────────────────────
-        // The EKO mascot has three highly distinctive color regions.
-        // ALL THREE must be present above threshold or score = 0.
-        // This prevents any random scene from triggering detection.
+        // Balanced 3-signature detection.
+        // ALL THREE mascot color regions must be present or score = 0.
+        // Thresholds are intentionally looser than hard-strict to handle
+        // varying lighting, print quality, and camera exposure.
 
         const total = framePixels.length / 4;
         let cyanCount = 0, purpleCount = 0, darkCount = 0;
@@ -521,34 +522,34 @@
         for (let i = 0; i < framePixels.length; i += 4) {
             const r = framePixels[i], g = framePixels[i+1], b = framePixels[i+2];
 
-            // Cyan/teal eyes: strong blue-green, clearly more G+B than R
-            if (g > 180 && b > 180 && g > r * 1.4 && b > r * 1.2) cyanCount++;
+            // Cyan/teal eyes: strong green+blue, clearly more than red
+            if (g > 160 && b > 150 && g > r * 1.2 && b > r * 1.0) cyanCount++;
 
-            // Purple/violet jacket: red and blue both clearly present, green low
-            if (r > 60 && r < 160 && g < 80 && b > 90 && b > g && r > g) purpleCount++;
+            // Purple/violet jacket: red+blue present, green suppressed
+            if (r > 50 && r < 180 && g < 100 && b > 70 && b > g) purpleCount++;
 
-            // Dark screen face: very dark pixel, no dominant channel
-            if (r < 30 && g < 45 && b < 55 && (r + g + b) < 90) darkCount++;
+            // Dark screen face: very dark, no channel dominant
+            if (r < 40 && g < 60 && b < 70 && (r + g + b) < 120) darkCount++;
         }
 
         const cyanRatio   = cyanCount   / total;
         const purpleRatio = purpleCount / total;
         const darkRatio   = darkCount   / total;
 
-        // Hard requirement: ALL three signatures must be present
-        const cyanOk   = cyanRatio   > 0.015;  // teal eyes
-        const purpleOk = purpleRatio > 0.045;  // purple jacket
-        const darkOk   = darkRatio   > 0.030;  // dark face screen
+        // All three must be present — gates false positives
+        const cyanOk   = cyanRatio   > 0.008;   // teal eyes
+        const purpleOk = purpleRatio > 0.020;   // purple jacket
+        const darkOk   = darkRatio   > 0.015;   // dark face screen
 
         if (!cyanOk || !purpleOk || !darkOk) return 0;
 
-        // All three present — score based on signal strength
-        const cyanStrength   = Math.min(1, cyanRatio   / 0.06);
-        const purpleStrength = Math.min(1, purpleRatio / 0.12);
-        const darkStrength   = Math.min(1, darkRatio   / 0.09);
+        // Score: 0.5 base + up to 0.5 from signal strength
+        const cyanStrength   = Math.min(1, cyanRatio   / 0.05);
+        const purpleStrength = Math.min(1, purpleRatio / 0.10);
+        const darkStrength   = Math.min(1, darkRatio   / 0.07);
 
         const signalScore = (cyanStrength + purpleStrength + darkStrength) / 3;
-        return Math.min(1.0, 0.55 + signalScore * 0.45);
+        return Math.min(1.0, 0.50 + signalScore * 0.50);
     }
 
     // ═══════════════════════════════════════════════════════
