@@ -291,65 +291,48 @@
     // CONFIG
     // ═══════════════════════════════════════════════════════
     const CONFIG = {
-        // URL is decoded automatically from QrCode.png at startup.
-        // This is only used as a last-resort fallback if decoding fails.
+        // Filled automatically by scanning the QR code from the live camera feed.
         WEBAR_URL: null,
 
-        // Path to the QR code image to decode
-        QR_IMAGE: './QrCode.png',
-
         // Path to the compiled .mind target file (from Mascot.png)
-        // Generate with: npx mind-ar-js compile --image Mascot.png
         TARGET_FILE: './targets/Mascot.mind',
 
-        // How long (seconds) to confirm detection before redirecting
-        CONFIRM_SECONDS: 3.0,
+        // Seconds of continuous detection required before triggering
+        CONFIRM_SECONDS: 4.0,
 
-        
-        AUTO_REDIRECT_SECONDS: 10,
-
-        // Redirect countdown after confirmed detection
-        REDIRECT_SECONDS: 2.0,
+        // Silent auto-redirect if nothing is scanned (seconds)
+        AUTO_REDIRECT_SECONDS: 25,
 
         // Use back camera on mobile
         PREFERRED_CAMERA: 'environment',
     };
 
     // ═══════════════════════════════════════════════════════
-    // DECODE QR CODE IMAGE → extract the WebAR URL
+    // LIVE QR SCAN — reads QR codes from the camera feed
+    // Runs silently in background every 15 frames.
+    // When a URL is found it is stored in CONFIG.WEBAR_URL.
     // ═══════════════════════════════════════════════════════
-    function decodeQRImage() {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
-                const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                ctx.drawImage(img, 0, 0);
-                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const result = jsQR(imageData.data, canvas.width, canvas.height);
-                if (result && result.data) {
-                    console.log('[EKO3D] QR decoded URL:', result.data);
-                    resolve(result.data);
-                } else {
-                    reject(new Error('Could not decode QR code from QrCode.png'));
-                }
-            };
-            img.onerror = () => reject(new Error('Failed to load QrCode.png'));
-            img.src = CONFIG.QR_IMAGE;
-        });
-    }
+    let qrFrameCount = 0;
+    const qrCanvas  = document.createElement('canvas');
+    const qrCtx     = qrCanvas.getContext('2d', { willReadFrequently: true });
 
-    // Decode QR immediately on load
-    decodeQRImage().then(url => {
-        CONFIG.WEBAR_URL = url;
-        console.log('[EKO3D] WebAR URL set from QR:', url);
-    }).catch(err => {
-        console.warn('[EKO3D] QR decode failed:', err.message);
-        console.warn('[EKO3D] Set CONFIG.WEBAR_URL manually or fix QrCode.png');
-    });
+    function scanQRFromCamera() {
+        if (CONFIG.WEBAR_URL) return; // already have it
+        if (!video.videoWidth)  return;
+
+        qrFrameCount++;
+        if (qrFrameCount % 15 !== 0) return; // every 15 frames
+
+        qrCanvas.width  = video.videoWidth;
+        qrCanvas.height = video.videoHeight;
+        qrCtx.drawImage(video, 0, 0);
+        const img = qrCtx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
+        const result = jsQR(img.data, img.width, img.height);
+        if (result && result.data && result.data.startsWith('http')) {
+            CONFIG.WEBAR_URL = result.data;
+            console.log('[EKO3D] QR scanned from camera:', result.data);
+        }
+    }
 
     // ═══════════════════════════════════════════════════════
     // STATE
@@ -523,13 +506,16 @@
         analysisCtx.drawImage(video, 0, 0, w, h);
         const frameData = analysisCtx.getImageData(0, 0, w, h);
 
-        // Color histogram matching (fast approximate detection)
+        // Also scan for QR code in the live feed (silently, every 15 frames)
+        scanQRFromCamera();
+
+        // Color detection
         const score = compareColorHistograms(referenceData.data, frameData.data);
 
         // Map score 0.0–1.0 → confidence bar
         confidenceBar.style.width = `${Math.round(score * 100)}%`;
 
-        if (score > 0.62) {
+        if (score > 0.50) {
             trackingDot.classList.add('active');
 
             if (state === 'scanning') {
@@ -559,53 +545,53 @@
     }
 
     function compareColorHistograms(refPixels, framePixels) {
-        // ── Detection tuned SPECIFICALLY to the EKO mascot PNG ──
-        //
-        // Three simultaneous signatures required — all must be present:
-        //  1. GLOWING TEAL EYES  — very bright cyan rings (most unique)
-        //     G>200, B>210, R<185, and B>R, G>R
-        //  2. DEEP PURPLE HOODIE — saturated purple/violet jacket
-        //     R:70-160, G:25-110, B:130-225, B>R*1.05, B>G*1.25
-        //  3. DARK FACE SCREEN   — near-black rectangle on head
-        //     R<45, G<45, B<55, sum<110
+        // Loose histogram match + EKO colour signature bonus.
+        // Triggers at score > 0.50. 4-second hold prevents false positives.
+        const bins = 16;
+        const refHist   = new Float32Array(bins * 3);
+        const frameHist = new Float32Array(bins * 3);
 
+        for (let i = 0; i < refPixels.length; i += 4) {
+            refHist[Math.floor(refPixels[i]   / 16)]       += 1;
+            refHist[bins   + Math.floor(refPixels[i+1] / 16)] += 1;
+            refHist[bins*2 + Math.floor(refPixels[i+2] / 16)] += 1;
+        }
+        for (let i = 0; i < framePixels.length; i += 4) {
+            frameHist[Math.floor(framePixels[i]   / 16)]       += 1;
+            frameHist[bins   + Math.floor(framePixels[i+1] / 16)] += 1;
+            frameHist[bins*2 + Math.floor(framePixels[i+2] / 16)] += 1;
+        }
+        const refTotal = refPixels.length / 4;
+        const fTotal   = framePixels.length / 4;
+        let colorScore = 0;
+        for (let i = 0; i < refHist.length; i++) {
+            refHist[i]   /= refTotal;
+            frameHist[i] /= fTotal;
+            colorScore   += Math.sqrt(refHist[i] * frameHist[i]);
+        }
+        colorScore /= 3;
+
+        // EKO colour signatures — 2 of 3 required for bonus
+        let tealC = 0, purpleC = 0, darkC = 0;
         const total = framePixels.length / 4;
-        let tealCount = 0, purpleCount = 0, darkCount = 0;
-
         for (let i = 0; i < framePixels.length; i += 4) {
             const r = framePixels[i], g = framePixels[i+1], b = framePixels[i+2];
-
-            // Glowing teal/cyan eyes — very bright, blue+green dominant over red
-            if (g > 200 && b > 210 && r < 185 && b > r && g > r) {
-                tealCount++;
-            }
-
-            // Deep purple hoodie — blue clearly beats red and green
-            if (r > 70 && r < 160 && g > 25 && g < 110 &&
-                b > 130 && b < 225 && b > r * 1.05 && b > g * 1.25) {
-                purpleCount++;
-            }
-
-            // Dark face screen — near black
-            if (r < 45 && g < 45 && b < 55 && (r + g + b) < 110) {
-                darkCount++;
-            }
+            if (g > 150 && b > 140 && g > r * 1.1)                     tealC++;
+            if (r > 50 && r < 190 && g < 110 && b > 60 && b > g)      purpleC++;
+            if (r < 50 && g < 65  && b < 75  && (r+g+b) < 140)        darkC++;
         }
+        const hasTeal   = tealC   / total > 0.004;
+        const hasPurple = purpleC / total > 0.010;
+        const hasDark   = darkC   / total > 0.008;
+        const sigs = (hasTeal?1:0) + (hasPurple?1:0) + (hasDark?1:0);
 
-        const tealRatio   = tealCount   / total;
-        const purpleRatio = purpleCount / total;
-        const darkRatio   = darkCount   / total;
-
-        // Hard gate: ALL three must be present
-        if (tealRatio   < 0.003) return 0;
-        if (purpleRatio < 0.018) return 0;
-        if (darkRatio   < 0.008) return 0;
-
-        const tealStr   = Math.min(1, tealRatio   / 0.018);
-        const purpleStr = Math.min(1, purpleRatio / 0.08);
-        const darkStr   = Math.min(1, darkRatio   / 0.04);
-
-        return Math.min(1.0, tealStr * 0.40 + purpleStr * 0.40 + darkStr * 0.20);
+        let bonus = 0;
+        if (sigs >= 2) {
+            if (hasTeal)   bonus += 0.12;
+            if (hasPurple) bonus += 0.12;
+            if (hasDark)   bonus += 0.08;
+        }
+        return Math.min(1.0, colorScore * 0.68 + bonus);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -639,7 +625,7 @@
         btn.textContent = 'Opening...';
         btn.disabled = true;
 
-        // Request motion + orientation permission synchronously inside this tap
+        // Request motion + orientation inside this tap gesture
         const motionReqs = [];
         if (typeof DeviceMotionEvent !== 'undefined' &&
             typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -651,23 +637,26 @@
         }
         if (motionReqs.length) await Promise.all(motionReqs);
 
-        // Stop camera
         if (videoStream) videoStream.getTracks().forEach(t => t.stop());
         if (controller) { try { controller.stopProcessVideo(); } catch(e) {} }
 
-        // Redirect to URL decoded from QR code
         if (CONFIG.WEBAR_URL) {
             window.location.href = CONFIG.WEBAR_URL;
         } else {
-            // Last-chance decode if startup decode failed
-            decodeQRImage().then(url => {
-                window.location.href = url;
-            }).catch(() => {
-                document.getElementById('redirect-text').textContent = 'Error: QR code could not be read';
-                btn.textContent = 'Retry';
-                btn.disabled = false;
-                state = 'detected';
-            });
+            // QR not yet found — do one final high-res scan attempt
+            const deadline = Date.now() + 2000;
+            const tryFinal = () => {
+                if (CONFIG.WEBAR_URL) { window.location.href = CONFIG.WEBAR_URL; return; }
+                if (Date.now() < deadline) { setTimeout(tryFinal, 100); }
+                else {
+                    document.getElementById('redirect-text').textContent =
+                        'Point camera at the QR code first';
+                    btn.textContent = 'Retry';
+                    btn.disabled = false;
+                    state = 'detected';
+                }
+            };
+            tryFinal();
         }
     }
 
