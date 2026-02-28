@@ -1,6 +1,6 @@
 # EKO3D Scanner
-
-A web app that uses your phone camera to detect the **EKO mascot** and launch an AR experience — no app install required.
+https://rovven.github.io/EKO3D-Experience/
+A web app that uses your phone camera to detect the **EKO mascot** and launch an AR experience , no app install required.
 
 ---
 
@@ -52,4 +52,5 @@ Camera access requires HTTPS (GitHub Pages, Netlify, Vercel, etc.).
 - [MindAR](https://hiukim.github.io/mind-ar-js-doc/) — image target tracking
 - [jsQR](https://github.com/cozmo/jsQR) — QR code decoding
 - Vanilla JS / HTML / CSS — no framework, no build step
+
 
